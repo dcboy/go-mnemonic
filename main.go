@@ -151,12 +151,31 @@ func main() {
 	var to string
 	var passphrase string
 	var chinese string
+	var validate string
+	var vlang string
 
 	flag.StringVar(&mnemonic, "m", "", "原始助记词，使用空格分隔")
 	flag.StringVar(&to, "to", "", "目标语言: en 或 zh")
 	flag.StringVar(&passphrase, "p", "", "可选的额外密码")
 	flag.StringVar(&chinese, "cn", "", "中文输入，转换为12词BIP39助记词")
+	flag.StringVar(&validate, "validate", "", "校验助记词有效性（需配合 -lang en|zh）")
+	flag.StringVar(&vlang, "lang", "", "校验助记词的词表语言: en 或 zh")
 	flag.Parse()
+
+	// 助记词有效性校验模式
+	if validate != "" && vlang != "" {
+		wl, err := getWordlist(strings.ToLower(vlang))
+		if err != nil {
+			fmt.Println("语言错误:", err)
+			return
+		}
+		if err := validateMnemonic(validate, wl); err != nil {
+			fmt.Println("校验失败:", err)
+		} else {
+			fmt.Println("校验通过")
+		}
+		return
+	}
 
 	// 中文 → BIP39 助记词（确定性）模式
 	if chinese != "" {
@@ -166,7 +185,7 @@ func main() {
 			fmt.Println("中文助记词生成失败:", err)
 			return
 		}
-		enWords, err := EntropyToMnemonicWithWordlist(entropy, wordlists.English)
+		enWords, err := EntropyToMnemonicWithWordlist(entropy, enWordlist)
 		if err != nil {
 			fmt.Println("英文助记词生成失败:", err)
 			return

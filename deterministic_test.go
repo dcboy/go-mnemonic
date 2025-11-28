@@ -3,6 +3,7 @@ package main
 import (
     "reflect"
     "testing"
+    "strings"
 
     "github.com/go-sonr/go-bip39/wordlists"
 )
@@ -60,5 +61,25 @@ func TestEnglishOutput(t *testing.T) {
     want := []string{"diagram", "matrix", "fold", "trip", "attract", "industry", "torch", "device", "neutral", "ridge", "virus", "attract", "lizard", "success", "use", "man", "injury", "anxiety", "lamp", "afford", "happy", "rich", "impact", "cattle"}
     if !reflect.DeepEqual(got, want) {
         t.Fatalf("输出不匹配\n got=%v\nwant=%v", got, want)
+    }
+}
+
+// TestMnemonicsValidate 使用标准库校验中英文助记词的有效性（校验和与词表）
+func TestMnemonicsValidate(t *testing.T) {
+    in := "区块链改变世界"
+    ent := ChineseToEntropy(in)
+
+    cn, err := EntropyToMnemonic(ent)
+    if err != nil { t.Fatal(err) }
+    en, err := EntropyToMnemonicWithWordlist(ent, enWordlist)
+    if err != nil { t.Fatal(err) }
+
+    // 中文校验
+    if err := validateMnemonic(strings.Join(cn, " "), zhCNWordlist); err != nil {
+        t.Fatalf("中文助记词校验失败: %v", err)
+    }
+    // 英文校验
+    if err := validateMnemonic(strings.Join(en, " "), enWordlist); err != nil {
+        t.Fatalf("英文助记词校验失败: %v", err)
     }
 }
