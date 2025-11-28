@@ -150,14 +150,34 @@ func main() {
 	var mnemonic string
 	var to string
 	var passphrase string
+	var chinese string
 
 	flag.StringVar(&mnemonic, "m", "", "原始助记词，使用空格分隔")
 	flag.StringVar(&to, "to", "", "目标语言: en 或 zh")
 	flag.StringVar(&passphrase, "p", "", "可选的额外密码")
+	flag.StringVar(&chinese, "cn", "", "中文输入，转换为12词BIP39助记词")
 	flag.Parse()
 
+	// 中文 → BIP39 助记词（确定性）模式
+	if chinese != "" {
+		entropy := ChineseToEntropy(chinese)
+		zhWords, err := EntropyToMnemonicWithWordlist(entropy, zhCNWordlist)
+		if err != nil {
+			fmt.Println("中文助记词生成失败:", err)
+			return
+		}
+		enWords, err := EntropyToMnemonicWithWordlist(entropy, wordlists.English)
+		if err != nil {
+			fmt.Println("英文助记词生成失败:", err)
+			return
+		}
+		fmt.Println("中文:", strings.Join(zhWords, " "))
+		fmt.Println("英文:", strings.Join(enWords, " "))
+		return
+	}
+
 	if mnemonic == "" || to == "" {
-		fmt.Println("用法: go run . -m \"<助记词>\" -to en|zh [-p <密码>]")
+		fmt.Println("用法: go run . -m \"<助记词>\" -to en|zh [-p <密码>] 或 -cn \"<中文句子>\"")
 		return
 	}
 
