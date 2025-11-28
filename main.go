@@ -157,7 +157,7 @@ func main() {
 	flag.StringVar(&mnemonic, "m", "", "原始助记词，使用空格分隔")
 	flag.StringVar(&to, "to", "", "目标语言: en 或 zh")
 	flag.StringVar(&passphrase, "p", "", "可选的额外密码")
-	flag.StringVar(&chinese, "cn", "", "中文输入，转换为12词BIP39助记词")
+	flag.StringVar(&chinese, "cn", "", "中文输入，转换为24词BIP39助记词")
 	flag.StringVar(&validate, "validate", "", "校验助记词有效性（需配合 -lang en|zh）")
 	flag.StringVar(&vlang, "lang", "", "校验助记词的词表语言: en 或 zh")
 	flag.Parse()

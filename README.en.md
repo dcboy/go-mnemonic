@@ -1,64 +1,60 @@
 # go-mnemonic
 
 ## Overview
-- Deterministically converts any Chinese sentence to BIP39 mnemonic words
-- Generates 24 Chinese words and prints the equivalent English words from the same entropy
-- Fully compliant with BIP39: `ENT + CS` bit concat, 11-bit slicing, official wordlist mapping
-- Uses official Simplified Chinese BIP39 wordlist (2048 words), importable into wallets that support CN wordlist
+- Chinese → BIP39 24 words (dual CN/EN output)
+- Mnemonic validation (`en`/`zh` wordlists)
+- Language conversion (preserve index sequence, entropy equality)
+- Strict BIP39: `ENT+CS`, MSB-first, 11-bit slicing, official wordlists
 
-## Features
-- Pure function: same input → same 24-word mnemonic (both CN/EN from identical entropy)
-- BIP39 compliance: `CS=ENT/32`, MSB-first bit order, 11-bit indices
-- Dual output: Chinese and English mnemonics derived from the same entropy
-
-## Install & Run
+## Quick Start
 - Requires Go 1.20+
-- Run the tool:
-  - `go run . -cn "your Chinese sentence"`
-
-## Examples
-- Example 1:
-  - Command: `go run . -cn "区块链改变世界"`
-  - Output:
-    - CN: `照 迎 逐 邀 四 座 抑 县 键 隐 驾 四 湿 雾 妥 忙 威 二 归 可 贵 氮 亮 术`
-    - EN: `diagram matrix fold trip attract industry torch device neutral ridge virus attract lizard success use man injury anxiety lamp afford happy rich impact cattle`
-- Example 2:
-  - Command: `go run . -cn "人工智能创造未来财富"`
-  - Output:
-    - CN: `床 薯 开 赵 的 除 头 盐 见 鸿 计 港 借 随 限 茶 庭 响 励 恒 姑 函 柴 作`
-    - EN: `lock surprise artwork jar abandon curious box floor broken stomach bronze pave layer disagree fatigue gorilla limit cross raw toilet ocean march plate addict`
+- Commands:
+  - CN → 24 words (dual): `go run . -cn "区块链改变世界"`
+  - Validate: `go run . -validate "<mnemonic>" -lang en|zh`
+  - Convert: `go run . -m "<mnemonic>" -to en|zh [-p "<passphrase>"]`
 
 ## CLI Flags
-- `-cn "Chinese sentence"`: required, outputs 24 Chinese and English words
-- Legacy conversion mode (kept for compatibility):
-  - `-m "<mnemonic>" -to en|zh [-p <passphrase>]` for language conversion & entropy/seed checks
+- `-cn` Chinese input, outputs 24 Chinese & English words
+- `-validate` validate a mnemonic (requires `-lang en|zh`)
+- `-lang` wordlist for validation (`en`/`zh`)
+- `-m` original mnemonic (space-separated)
+- `-to` target language (`en` or `zh`)
+- `-p` optional passphrase for PBKDF2 seed checks
 
-## Algorithm & Determinism
-- CN → Entropy: `entropy = SHA256(UTF-8 Chinese)` (full 32 bytes = 256 bits)
-- Checksum: `CS = ENT/32 = 8` bits; take first `CS` bits of `SHA256(entropy)`
-- Concat to `ENT+CS = 264` bits; slice MSB-first into 24 groups of 11 bits
-- Map indices into wordlists (CN/EN 2048 words) to get equivalent dual-language mnemonics
-- Pure function: no randomness; same input always produces the same output
+## Examples
+- `go run . -cn "区块链改变世界"`
+  - CN: `照 迎 逐 邀 四 座 抑 县 键 隐 驾 四 湿 雾 妥 忙 威 二 归 可 贵 氮 亮 术`
+  - EN: `diagram matrix fold trip attract industry torch device neutral ridge virus attract lizard success use man injury anxiety lamp afford happy rich impact cattle`
+- Validate English:
+  - `go run . -validate "diagram ... cattle" -lang en` → `Valid`
+- Convert and print consistency:
+  - `go run . -m "<CN/EN mnemonic>" -to en|zh [-p "<passphrase>"]`
+  - Prints: source/target language, converted mnemonic, source/target entropy, equality, source/target seed (reference)
 
-## BIP39 Compatibility
-- Wordlist: official BIPs repository `bip-0039/chinese_simplified.txt`
-- Strict bit semantics & slicing as per BIP39; resulting mnemonics can be imported into wallets that support CN wordlist (e.g., MetaMask, Trust Wallet)
-- Note: some wallets default to English wordlist; ensure you switch to Simplified Chinese when importing CN mnemonics
+## How It Works
+- CN → entropy: `SHA256(UTF-8 CN)` full 32 bytes (256 bits)
+- Checksum: `CS=ENT/32=8` bits from `SHA256(entropy)`
+- Bitstream: `ENT+CS=264` bits, MSB-first slicing to 24 × 11-bit indices
+- Mapping: indices → official wordlists (CN/EN 2048 words)
+- Pure function: deterministic, no randomness
 
-## Security Notes
-- Security depends entirely on the entropy of your Chinese input; use a long, highly random sentence
-- Consider using a wallet passphrase to strengthen overall security
-- Standard BIP39 recommends cryptographically secure random entropy; this tool is intended as a memory aid only
+## Compatibility
+- CN wordlist: official `bip-0039/chinese_simplified.txt` (embedded)
+- EN wordlist: official `bip-0039/english.txt` (embedded)
+- Wallet import: select 24-words mode; CN import requires Simplified Chinese support
+
+## Security
+- Use long, highly random sentences; enable wallet passphrase
+- Convert mode prints entropy & seed (hex) — treat as sensitive output
+- Standard BIP39 recommends cryptographically secure entropy; this tool is a memory aid
 
 ## Tests
 - Run: `go test ./...`
-- Includes:
-  - Same-input stability (two runs produce identical outputs)
-  - Fixed output cases for the above examples (both CN & EN)
+- Covers: stability, fixed CN/EN outputs, wordlist validation
 
 ## Code Map
+- CLI: `main.go`
 - CN entropy & mnemonics: `deterministic.go`
-- CN wordlist loading: `wordlist_zh.go`
-- CLI entry: `main.go`
+- CN wordlist: `wordlist_zh.go`
+- EN wordlist: `wordlist_en.go`
 - Tests: `deterministic_test.go`
-
