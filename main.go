@@ -1,14 +1,24 @@
 package main
 
 import (
+	"crypto/ed25519"
+	"crypto/hmac"
+	"crypto/sha256"
+	"crypto/sha512"
 	"encoding/hex"
 	"errors"
 	"flag"
 	"fmt"
+	"math/big"
 	"strings"
 
+	"github.com/ethereum/go-ethereum/crypto"
 	"github.com/go-sonr/go-bip39/wordlists"
+	"github.com/mr-tron/base58"
+	bip32 "github.com/tyler-smith/go-bip32"
 	bip39 "github.com/tyler-smith/go-bip39"
+	"golang.org/x/crypto/blake2b"
+	"golang.org/x/crypto/ripemd160"
 )
 
 // convertMnemonic 将助记词从源语言转换到目标语言，保持同一索引序列以保证秘钥一致
@@ -139,120 +149,108 @@ func toSet(list []string) map[string]bool {
 	return m
 }
 
-// main 提供命令行接口：
-//
-//	-m "助记词"      必填，原始助记词
-//	-to en|zh       必填，目标语言
-//	-p "pass"       可选，额外密码（默认空）
-//
-// 自动检测源语言；执行转换并校验种子一致性
+// main 命令行入口（核心功能）
+// 功能：
+// 1) 接收任意字符串输入，按 12/24 词长度生成英文 BIP39 助记词；
+// 2) 由助记词派生种子并计算 BTC/ETH（secp256k1，BIP32/BIP44）地址；
+// 3) 计算 Solana/Sui（Ed25519，SLIP-0010）地址；
+// 4) 将助记词与四链地址打印输出。
 func main() {
-	var mnemonic string
-	var to string
-	var passphrase string
-	var chinese string
-	var validate string
-	var vlang string
-
-	flag.StringVar(&mnemonic, "m", "", "原始助记词，使用空格分隔")
-	flag.StringVar(&to, "to", "", "目标语言: en 或 zh")
-	flag.StringVar(&passphrase, "p", "", "可选的额外密码")
-	flag.StringVar(&chinese, "cn", "", "中文输入，转换为24词BIP39助记词")
-	flag.StringVar(&validate, "validate", "", "校验助记词有效性（需配合 -lang en|zh）")
-	flag.StringVar(&vlang, "lang", "", "校验助记词的词表语言: en 或 zh")
+	var input string
+	var words int
+	flag.StringVar(&input, "s", "", "input string (any language)")
+	flag.IntVar(&words, "words", 24, "mnemonic length: 12 or 24")
 	flag.Parse()
 
-	// 助记词有效性校验模式
-	if validate != "" && vlang != "" {
-		wl, err := getWordlist(strings.ToLower(vlang))
+	if input == "" || (words != 12 && words != 24) {
+		fmt.Println("Usage: go run . -s \"<string>\" -words 12|24")
+		return
+	}
+
+	// 步骤1：字符串 → SHA256 → 指定长度熵
+	ent, err := stringToEntropy(input, words)
+	if err != nil {
+		panic(err)
+	}
+	// 步骤2：熵 → 英文 BIP39 助记词
+	mnemonic, err := bip39.NewMnemonic(ent)
+	if err != nil {
+		panic(err)
+	}
+	fmt.Println("Mnemonic:", mnemonic)
+
+	// 步骤3：助记词 → BIP39 种子（无密码）
+	seed, err := bip39.NewSeedWithErrorChecking(mnemonic, "")
+	if err != nil {
+		panic(err)
+	}
+
+	hard := uint32(0x80000000)
+	// BTC m/44'/0'/0'/0/0
+	btcPath := []uint32{44 | hard, 0 | hard, 0 | hard, 0, 0}
+	btcKey, err := bip32.NewMasterKey(seed)
+	if err != nil {
+		panic(err)
+	}
+	for _, i := range btcPath {
+		btcKey, err = btcKey.NewChildKey(i)
 		if err != nil {
-			fmt.Println("语言错误:", err)
-			return
+			panic(err)
 		}
-		if err := validateMnemonic(validate, wl); err != nil {
-			fmt.Println("校验失败:", err)
-		} else {
-			fmt.Println("校验通过")
-		}
-		return
+	}
+	btcPriv := privFromBIP32Key(btcKey)
+	// 计算 BTC P2PKH 地址（压缩公钥）
+	btcAddr, err := btcP2PKHFromPriv(btcPriv)
+	if err != nil {
+		panic(err)
 	}
 
-	// 中文 → BIP39 助记词（确定性）模式
-	if chinese != "" {
-		entropy := ChineseToEntropy(chinese)
-		zhWords, err := EntropyToMnemonicWithWordlist(entropy, zhCNWordlist)
+	// ETH m/44'/60'/0'/0/0
+	ethPath := []uint32{44 | hard, 60 | hard, 0 | hard, 0, 0}
+	ethKey, err := bip32.NewMasterKey(seed)
+	if err != nil {
+		panic(err)
+	}
+	for _, i := range ethPath {
+		ethKey, err = ethKey.NewChildKey(i)
 		if err != nil {
-			fmt.Println("中文助记词生成失败:", err)
-			return
+			panic(err)
 		}
-		enWords, err := EntropyToMnemonicWithWordlist(entropy, enWordlist)
-		if err != nil {
-			fmt.Println("英文助记词生成失败:", err)
-			return
-		}
-		fmt.Println("中文:", strings.Join(zhWords, " "))
-		fmt.Println("英文:", strings.Join(enWords, " "))
-		return
 	}
-
-	if mnemonic == "" || to == "" {
-		fmt.Println("用法: go run . -m \"<助记词>\" -to en|zh [-p <密码>] 或 -cn \"<中文句子>\"")
-		return
-	}
-
-	src := detectLanguage(mnemonic)
-	dst := strings.ToLower(to)
-
-	srcList, err := getWordlist(src)
+	ethPriv := privFromBIP32Key(ethKey)
+	// 计算 ETH 地址（keccak 公钥后 20 字节）
+	ethAddr, err := ethAddressFromPriv(ethPriv)
 	if err != nil {
-		fmt.Println("源语言错误:", err)
-		return
+		panic(err)
 	}
-	dstList, err := getWordlist(dst)
+
+	// Solana m/44'/501'/0'/0' (Ed25519, SLIP-0010)
+	solPath := []uint32{44 | hard, 501 | hard, 0 | hard, 0 | hard}
+	solPriv, _, err := slip10Ed25519(seed, solPath)
 	if err != nil {
-		fmt.Println("目标语言错误:", err)
-		return
+		panic(err)
 	}
+	solKey := ed25519.NewKeyFromSeed(solPriv)
+	solPub := solKey.Public().(ed25519.PublicKey)
+	// Solana 地址为 Ed25519 公钥 Base58
+	solAddr := base58.Encode(solPub)
 
-	// 源助记词校验
-	if err := validateMnemonic(mnemonic, srcList); err != nil {
-		fmt.Println("源助记词校验失败:", err)
-		return
-	}
-
-	// 执行转换
-	converted, err := convertMnemonic(mnemonic, src, dst)
+	// Sui m/44'/784'/0'/0'/0' (Ed25519, SLIP-0010)
+	suiPath := []uint32{44 | hard, 784 | hard, 0 | hard, 0 | hard, 0 | hard}
+	suiPriv, _, err := slip10Ed25519(seed, suiPath)
 	if err != nil {
-		fmt.Println("转换失败:", err)
-		return
+		panic(err)
 	}
+	suiKey := ed25519.NewKeyFromSeed(suiPriv)
+	suiPub := suiKey.Public().(ed25519.PublicKey)
+	// Sui 地址为 blake2b-256(flag||pubkey) 的十六进制表示（flag=0x00）
+	sum := blake2b.Sum256(append([]byte{0x00}, suiPub...))
+	suiAddr := "0x" + hex.EncodeToString(sum[:])
 
-	// 计算两种语言的熵并比对（确保秘钥一致性）
-	entropySrc, err := entropyForMnemonic(mnemonic, srcList)
-	if err != nil {
-		fmt.Println("源熵计算失败:", err)
-		return
-	}
-	entropyDst, err := entropyForMnemonic(converted, dstList)
-	if err != nil {
-		fmt.Println("目标熵计算失败:", err)
-		return
-	}
-
-	sameEntropy := hex.EncodeToString(entropySrc) == hex.EncodeToString(entropyDst)
-
-	// 同时计算种子（用于参考，注意不同语言的助记词会导致种子不同）
-	seedSrc, _ := seedForMnemonic(mnemonic, srcList, passphrase)
-	seedDst, _ := seedForMnemonic(converted, dstList, passphrase)
-
-	fmt.Println("源语言:", src)
-	fmt.Println("目标语言:", dst)
-	fmt.Println("转换后助记词:", converted)
-	fmt.Println("源熵:", hex.EncodeToString(entropySrc))
-	fmt.Println("目标熵:", hex.EncodeToString(entropyDst))
-	fmt.Println("熵是否一致(秘钥一致):", sameEntropy)
-	fmt.Println("源种子(参考):", hex.EncodeToString(seedSrc))
-	fmt.Println("目标种子(参考):", hex.EncodeToString(seedDst))
+	fmt.Println("BTC:", btcAddr)
+	fmt.Println("ETH:", ethAddr)
+	fmt.Println("SOL:", solAddr)
+	fmt.Println("SUI:", suiAddr)
 }
 
 // entropyForMnemonic 根据词表计算助记词对应的原始熵（128-256位）
@@ -260,4 +258,114 @@ func main() {
 func entropyForMnemonic(mnemonic string, wordlist []string) ([]byte, error) {
 	bip39.SetWordList(wordlist)
 	return bip39.EntropyFromMnemonic(mnemonic)
+}
+
+// btcP2PKHFromPriv 由 secp256k1 私钥计算 BTC P2PKH 地址（主网，压缩公钥）
+func btcP2PKHFromPriv(privKey []byte) (string, error) {
+	k, err := crypto.ToECDSA(privKey)
+	if err != nil {
+		return "", err
+	}
+	// 1) 构造压缩公钥：前缀 0x02/0x03 + 32 字节 X 坐标
+	x := k.X.Bytes()
+	if len(x) < 32 {
+		pad := make([]byte, 32-len(x))
+		x = append(pad, x...)
+	}
+	prefix := byte(0x02)
+	if k.Y.Bit(0) == 1 {
+		prefix = 0x03
+	}
+	comp := append([]byte{prefix}, x...)
+	// 2) HASH160：RIPEMD160(SHA256(pubkey))
+	h1 := sha256.Sum256(comp)
+	r := ripemd160.New()
+	r.Write(h1[:])
+	h160 := r.Sum(nil)
+	// 3) 主网 version 前缀 0x00 + payload
+	payload := append([]byte{0x00}, h160...)
+	// 4) 双 SHA256 取前 4 字节作为校验和
+	c1 := sha256.Sum256(payload)
+	c2 := sha256.Sum256(c1[:])
+	// 5) Base58Check 编码
+	full := append(payload, c2[:4]...)
+	return base58.Encode(full), nil
+}
+
+// slip10Ed25519 派生 Ed25519 私钥（SLIP-0010，全硬化）
+func slip10Ed25519(seed []byte, path []uint32) (priv []byte, chain []byte, err error) {
+	// 1) Master：I = HMAC-SHA512(key="ed25519 seed", data=seed)
+	I := hmacSHA512([]byte("ed25519 seed"), seed)
+	k := I[:32] // 左半 32 字节作为主私钥
+	c := I[32:] // 右半 32 字节作为链码
+	for _, i := range path {
+		// 2) 全硬化派生：非硬化索引强制 +0x80000000
+		if i < 0x80000000 {
+			i = i + 0x80000000
+		}
+		// 3) 子键派生数据: 0x00 || k_parent || index_be(4 字节)
+		data := make([]byte, 0, 1+32+4)
+		data = append(data, 0x00)
+		data = append(data, k...)
+		ib := new(big.Int).SetUint64(uint64(i)).FillBytes(make([]byte, 4))
+		data = append(data, ib...)
+		// 4) 计算下一层: I = HMAC-SHA512(chain, data)
+		I = hmacSHA512(c, data)
+		k = I[:32]
+		c = I[32:]
+	}
+	return k, c, nil
+}
+
+// hmacSHA512 简化封装
+// hmacSHA512 计算 HMAC-SHA512
+// 输入：密钥与数据；输出：64 字节的 MAC 值
+func hmacSHA512(key, data []byte) []byte {
+	h := hmac.New(sha512.New, key)
+	h.Write(data)
+	return h.Sum(nil)
+}
+
+// privFromBIP32Key 提取 BIP32 私钥原始 32 字节
+// 兼容不同库：有的序列化为 33 字节（首字节 0x00），此处去掉前导 0
+func privFromBIP32Key(k *bip32.Key) []byte {
+	if !k.IsPrivate {
+		return nil
+	}
+	if len(k.Key) == 32 {
+		return k.Key
+	}
+	if len(k.Key) == 33 {
+		return k.Key[1:]
+	}
+	return nil
+}
+
+// stringToEntropy 任意字符串 → SHA256 → 128/256 位熵
+// 参数 words 指定助记词长度（12 或 24），分别对应 128/256 位熵
+func stringToEntropy(s string, words int) ([]byte, error) {
+	sum := sha256.Sum256([]byte(s))
+	switch words {
+	case 12:
+		out := make([]byte, 16)
+		copy(out, sum[:16])
+		return out, nil
+	case 24:
+		out := make([]byte, 32)
+		copy(out, sum[:])
+		return out, nil
+	default:
+		return nil, errors.New("words 仅支持 12 或 24")
+	}
+}
+
+// ethAddressFromPriv 由 secp256k1 私钥计算 ETH 地址
+// 过程：私钥→椭圆曲线公钥→Keccak-256 哈希→后 20 字节十六进制地址
+func ethAddressFromPriv(privKey []byte) (string, error) {
+	k, err := crypto.ToECDSA(privKey)
+	if err != nil {
+		return "", err
+	}
+	addr := crypto.PubkeyToAddress(k.PublicKey)
+	return addr.Hex(), nil
 }
