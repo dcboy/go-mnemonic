@@ -4,7 +4,6 @@ go 1.25.1
 
 require (
 	github.com/ethereum/go-ethereum v1.16.7
-	github.com/go-sonr/go-bip39 v1.1.1
 	github.com/mr-tron/base58 v1.2.0
 	github.com/tyler-smith/go-bip32 v1.0.0
 	github.com/tyler-smith/go-bip39 v1.1.0

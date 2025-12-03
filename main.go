@@ -10,144 +10,17 @@ import (
 	"flag"
 	"fmt"
 	"math/big"
+	"os"
 	"strings"
+	"text/tabwriter"
 
 	"github.com/ethereum/go-ethereum/crypto"
-	"github.com/go-sonr/go-bip39/wordlists"
 	"github.com/mr-tron/base58"
 	bip32 "github.com/tyler-smith/go-bip32"
 	bip39 "github.com/tyler-smith/go-bip39"
 	"golang.org/x/crypto/blake2b"
 	"golang.org/x/crypto/ripemd160"
 )
-
-// convertMnemonic 将助记词从源语言转换到目标语言，保持同一索引序列以保证秘钥一致
-// 参数:
-//   - mnemonic: 原始助记词字符串（以空格分隔）
-//   - srcLang: 源语言标识("en" 或 "zh")
-//   - dstLang: 目标语言标识("en" 或 "zh")
-//
-// 返回:
-//   - 转换后的助记词字符串
-//   - 错误信息
-func convertMnemonic(mnemonic, srcLang, dstLang string) (string, error) {
-	if srcLang == dstLang {
-		return mnemonic, nil
-	}
-	srcList, err := getWordlist(srcLang)
-	if err != nil {
-		return "", err
-	}
-	dstList, err := getWordlist(dstLang)
-	if err != nil {
-		return "", err
-	}
-
-	// 构建源语言的词->索引映射
-	indexMap := make(map[string]int, len(srcList))
-	for i, w := range srcList {
-		indexMap[w] = i
-	}
-
-	words := normalizeSplit(mnemonic)
-	indices := make([]int, len(words))
-	for i, w := range words {
-		idx, ok := indexMap[w]
-		if !ok {
-			return "", fmt.Errorf("词不在源语言词表: %s", w)
-		}
-		indices[i] = idx
-	}
-
-	out := make([]string, len(indices))
-	for i, idx := range indices {
-		if idx < 0 || idx >= len(dstList) {
-			return "", fmt.Errorf("索引超界: %d", idx)
-		}
-		out[i] = dstList[idx]
-	}
-	return strings.Join(out, " "), nil
-}
-
-// getWordlist 根据语言标识返回对应的BIP39词表
-// 支持: en(English), zh(Chinese Simplified)
-func getWordlist(lang string) ([]string, error) {
-	switch strings.ToLower(lang) {
-	case "en", "english":
-		return wordlists.English, nil
-	case "zh", "chinese", "chinese-simplified", "zh-cn":
-		return wordlists.ChineseSimplified, nil
-	default:
-		return nil, fmt.Errorf("不支持的语言: %s", lang)
-	}
-}
-
-// validateMnemonic 使用指定词表校验助记词有效性（包含词表匹配与校验和）
-// 参数:
-//   - mnemonic: 助记词
-//   - wordlist: 词表
-func validateMnemonic(mnemonic string, wordlist []string) error {
-	bip39.SetWordList(wordlist)
-	if !bip39.IsMnemonicValid(mnemonic) {
-		return errors.New("助记词无效或与词表不匹配")
-	}
-	return nil
-}
-
-// seedForMnemonic 使用指定词表计算种子（PBKDF2），用于跨语言一致性校验
-// 参数:
-//   - mnemonic: 助记词
-//   - wordlist: 词表
-//   - passphrase: 额外密码（可为空字符串）
-//
-// 返回:
-//   - 64字节种子
-func seedForMnemonic(mnemonic string, wordlist []string, passphrase string) ([]byte, error) {
-	if err := validateMnemonic(mnemonic, wordlist); err != nil {
-		return nil, err
-	}
-	return bip39.NewSeedWithErrorChecking(mnemonic, passphrase)
-}
-
-// detectLanguage 粗略检测助记词语言，比较词在英文与中文词表中的匹配数量
-// 返回: "en" 或 "zh"
-func detectLanguage(mnemonic string) string {
-	words := normalizeSplit(mnemonic)
-	enSet := toSet(wordlists.English)
-	zhSet := toSet(wordlists.ChineseSimplified)
-	enCount, zhCount := 0, 0
-	for _, w := range words {
-		if enSet[w] {
-			enCount++
-		}
-		if zhSet[w] {
-			zhCount++
-		}
-	}
-	if enCount >= zhCount {
-		return "en"
-	}
-	return "zh"
-}
-
-// normalizeSplit 规范化空格并拆分为词数组
-func normalizeSplit(s string) []string {
-	s = strings.TrimSpace(s)
-	s = strings.Join(strings.Fields(s), " ")
-	if s == "" {
-		return []string{}
-	}
-	return strings.Split(s, " ")
-}
-
-// toSet 将词表转换为集合以便快速匹配
-func toSet(list []string) map[string]bool {
-	m := make(map[string]bool, len(list))
-	for _, w := range list {
-		m[w] = true
-	}
-	return m
-}
 
 // main 命令行入口（核心功能）
 // 功能：
@@ -177,7 +50,8 @@ func main() {
 	if err != nil {
 		panic(err)
 	}
-	fmt.Println("Mnemonic:", mnemonic)
+	// 以tabwriter表格形式输出助记词
+	printTabTable([]string{"Mnemonic"}, [][]string{{mnemonic}})
 
 	// 步骤3：助记词 → BIP39 种子（无密码）
 	seed, err := bip39.NewSeedWithErrorChecking(mnemonic, "")
@@ -247,17 +121,46 @@ func main() {
 	sum := blake2b.Sum256(append([]byte{0x00}, suiPub...))
 	suiAddr := "0x" + hex.EncodeToString(sum[:])
 
-	fmt.Println("BTC:", btcAddr)
-	fmt.Println("ETH:", ethAddr)
-	fmt.Println("SOL:", solAddr)
-	fmt.Println("SUI:", suiAddr)
+	// BNB (EVM, BSC) 使用与 ETH 相同的地址格式，建议单独派生路径以便区分
+	// 路径: m/44'/60'/0'/0/1 （同 EVM 体系，取不同地址索引）
+	bnbPath := []uint32{44 | hard, 60 | hard, 0 | hard, 0, 1}
+	bnbKey, err := bip32.NewMasterKey(seed)
+	if err != nil {
+		panic(err)
+	}
+	for _, i := range bnbPath {
+		bnbKey, err = bnbKey.NewChildKey(i)
+		if err != nil {
+			panic(err)
+		}
+	}
+	bnbPriv := privFromBIP32Key(bnbKey)
+	bnbAddr, err := ethAddressFromPriv(bnbPriv)
+	if err != nil {
+		panic(err)
+	}
+
+	// 构造输出表格（网络、地址、浏览器链接）
+	headers := []string{"Network", "Address", "Explorer"}
+	rows := [][]string{
+		{"BTC", btcAddr, "https://www.blockchain.com/btc/address/" + btcAddr},
+		{"ETH", ethAddr, "https://etherscan.io/address/" + ethAddr},
+		{"BNB", bnbAddr, "https://bscscan.com/address/" + bnbAddr},
+		{"SOL", solAddr, "https://explorer.solana.com/address/" + solAddr},
+		{"SUI", suiAddr, "https://suivision.xyz/account/" + suiAddr + "?network=mainnet"},
+	}
+	printTabTable(headers, rows)
 }
 
-// entropyForMnemonic 根据词表计算助记词对应的原始熵（128-256位）
-// 返回的熵用于验证跨语言转换的“秘钥”是否一致
-func entropyForMnemonic(mnemonic string, wordlist []string) ([]byte, error) {
-	bip39.SetWordList(wordlist)
-	return bip39.EntropyFromMnemonic(mnemonic)
+// printTabTable 使用 text/tabwriter 输出对齐的表格
+// 输入：表头与数据行；以制表符分隔列并自动对齐
+func printTabTable(headers []string, rows [][]string) {
+	w := tabwriter.NewWriter(os.Stdout, 0, 0, 2, ' ', 0)
+	fmt.Fprintln(w, strings.Join(headers, "\t"))
+	for _, r := range rows {
+		fmt.Fprintln(w, strings.Join(r, "\t"))
+	}
+	w.Flush()
 }
 
 // btcP2PKHFromPriv 由 secp256k1 私钥计算 BTC P2PKH 地址（主网，压缩公钥）
